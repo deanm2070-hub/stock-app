@@ -287,6 +287,93 @@ $("#picks").addEventListener("click", (e) => {
 });
 $("#rescreen").addEventListener("click", loadPicks);
 
+/* ---------- 大單提示 ---------- */
+const bt = { lastId: 0, items: [], local: { sound: true, notify: false } };
+try { Object.assign(bt.local, JSON.parse(localStorage.getItem("bigtrade") || "{}")); } catch {}
+const saveLocal = () => { try { localStorage.setItem("bigtrade", JSON.stringify(bt.local)); } catch {} };
+const SIDE = { buy: ["外盤大買", "up"], sell: ["內盤大賣", "down"], neutral: ["大量成交", "flat"] };
+
+let audioCtx;
+document.addEventListener("click", () => { audioCtx ??= new (window.AudioContext || window.webkitAudioContext)(); }, { once: true });
+function beep(side) {
+  if (!audioCtx || !bt.local.sound) return;
+  // 外盤：高音往上兩聲；內盤：低音往下兩聲；中性：一聲
+  const tones = side === "buy" ? [880, 1320] : side === "sell" ? [660, 440] : [740];
+  tones.forEach((f, i) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain(), t = audioCtx.currentTime + i * 0.18;
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0.2, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t);
+    o.stop(t + 0.16);
+  });
+}
+
+const btText = (a) => `${a.code} ${a.name || ""} ${SIDE[a.side][0]} ${fmtInt(a.lots)} 張 @ ${fmt(a.price)}（${fmt(a.amount / 1e4, 0)} 萬）`;
+
+function renderBigTrades(fresh = new Set()) {
+  $("#bt-count").textContent = bt.items.length ? `${bt.items.length} 筆` : "";
+  $("#bt-list").innerHTML = bt.items.length ? bt.items.slice().reverse().map((a) => {
+    const [label, c] = SIDE[a.side];
+    return `<li data-code="${a.code}" class="${fresh.has(a.id) ? "new" : ""}">
+      <div class="row1"><span>${a.time.slice(0, 5)} <b>${a.code}</b> ${a.name || ""}</span><span class="bt-side ${c}">${label}</span></div>
+      <div class="row2"><span>${fmtInt(a.lots)} 張 @ ${fmt(a.price)}<span class="tag">${a.note || (a.single ? "單筆" : "累計")}</span></span><span>${fmt(a.amount / 1e4, 0)} 萬</span></div></li>`;
+  }).join("") : `<li class="hint">盤中偵測到大單會列在這裡</li>`;
+}
+
+async function refreshBigTrades(initial = false) {
+  let rows;
+  try { rows = await api(`/api/bigtrades?since=${bt.lastId}`); } catch { return; }
+  if (!rows.length) return;
+  if (initial || (bt.items.length && rows[0].date !== bt.items[bt.items.length - 1].date)) bt.items = [];
+  bt.items.push(...rows);
+  bt.items = bt.items.slice(-300);
+  bt.lastId = rows[rows.length - 1].id;
+  renderBigTrades(initial ? new Set() : new Set(rows.map((a) => a.id)));
+  if (initial) return;
+  beep(rows[rows.length - 1].side);
+  rows.forEach((a) => {
+    document.querySelector(`#watch-table tr[data-code="${a.code}"]`)?.classList.add("bt-hit");
+    if (bt.local.notify && window.Notification?.permission === "granted") {
+      new Notification(`${SIDE[a.side][0]} ${a.code} ${a.name || ""}`, { body: btText(a), tag: `bt-${a.id}` });
+    }
+  });
+  setTimeout(() => document.querySelectorAll("#watch-table tr.bt-hit").forEach((tr) => tr.classList.remove("bt-hit")), 3000);
+}
+
+$("#bt-list").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-code]");
+  if (li) selectStock(li.dataset.code);
+});
+$("#bt-cfg").addEventListener("click", async () => {
+  const f = $("#bt-settings");
+  f.classList.toggle("hidden");
+  if (f.classList.contains("hidden")) return;
+  const s = await api("/api/bigtrades/settings").catch(() => ({}));
+  $("#bt-enabled").checked = !!s.enabled;
+  $("#bt-lots").value = s.min_lots ?? 50;
+  $("#bt-amount").value = Math.round((s.min_amount ?? 1e7) / 1e4);
+  $("#bt-sound").checked = bt.local.sound;
+  $("#bt-notify").checked = bt.local.notify && window.Notification?.permission === "granted";
+});
+$("#bt-settings").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  bt.local.sound = $("#bt-sound").checked;
+  bt.local.notify = $("#bt-notify").checked;
+  if (bt.local.notify && window.Notification && Notification.permission !== "granted") {
+    bt.local.notify = (await Notification.requestPermission()) === "granted";
+    if (!bt.local.notify) alert("瀏覽器沒有允許通知，請在網址列左邊的設定開啟。");
+  }
+  saveLocal();
+  await api("/api/bigtrades/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    enabled: $("#bt-enabled").checked,
+    min_lots: Math.max(0, parseInt($("#bt-lots").value) || 0),
+    min_amount: Math.max(0, Math.round((parseFloat($("#bt-amount").value) || 0) * 1e4)),
+  }) });
+  $("#bt-settings").classList.add("hidden");
+});
+
 /* ---------- 其他 ---------- */
 function showView(v) {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
@@ -312,9 +399,12 @@ async function setStatus(err) {
   state.watch = await api("/api/watchlist");
   await setStatus();
   selectStock(state.watch[0] || "2330");
+  renderBigTrades();
+  await refreshBigTrades(true);
   let tick = 0;
   setInterval(() => {
     tick++;
     if (isMarketOpen() || tick % 12 === 0) refreshQuotes();
+    if (isMarketOpen()) refreshBigTrades();
   }, 5000);
 })();

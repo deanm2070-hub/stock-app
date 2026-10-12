@@ -24,6 +24,17 @@
   <aside class="watchlist">
     <div class="panel-title">自選股 <span class="hint">（點右鍵移除）</span></div>
     <table id="watch-table"><tbody></tbody></table>
+    <div class="panel-title bt-title">大單提示 <span id="bt-count" class="hint"></span><button id="bt-cfg">設定</button></div>
+    <form id="bt-settings" class="bt-settings hidden">
+      <label><input type="checkbox" id="bt-enabled"> 盤中偵測自選股大單</label>
+      <label>量差至少 <input type="number" id="bt-lots" min="0" step="10"> 張</label>
+      <label>且金額至少 <input type="number" id="bt-amount" min="0" step="100"> 萬元</label>
+      <label><input type="checkbox" id="bt-sound"> 音效</label>
+      <label><input type="checkbox" id="bt-notify"> 桌面通知</label>
+      <button type="submit">儲存</button>
+      <div class="hint">免費報價約 5 秒一筆快照，不是逐筆明細。兩次快照間的多筆成交會合併成一筆「累計」；量差剛好等於最後一筆成交量時標「單筆」。</div>
+    </form>
+    <ul id="bt-list" class="bt-list"></ul>
   </aside>
 
   <section class="center">

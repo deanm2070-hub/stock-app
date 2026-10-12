@@ -76,6 +76,23 @@ input { background: #0b0e13; color: var(--text); border: 1px solid var(--line); 
 .badge { font-size: 11px; background: #3b3215; color: var(--accent); padding: 0 6px; border-radius: 8px; margin-left: 4px; }
 .empty { padding: 20px; color: var(--muted); text-align: center; }
 
+.watchlist { display: flex; flex-direction: column; }
+.bt-title { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--line); }
+.bt-title button { margin-left: auto; padding: 1px 8px; font-size: 12px; font-weight: 400; }
+.bt-settings { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.bt-settings input[type=number] { width: 80px; }
+.bt-settings button { align-self: flex-start; }
+.bt-list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; min-height: 120px; font-variant-numeric: tabular-nums; }
+.bt-list li { padding: 5px 8px; border-bottom: 1px solid #1d232c; cursor: pointer; font-size: 12px; }
+.bt-list li:hover { background: #1b212a; }
+.bt-list li.new { animation: bt-flash 2s ease-out; }
+.bt-list .row1 { display: flex; justify-content: space-between; gap: 6px; }
+.bt-list .bt-side { font-weight: 700; }
+.bt-list .row2 { color: var(--muted); display: flex; justify-content: space-between; }
+.bt-list .tag { font-size: 11px; border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; margin-left: 4px; }
+#watch-table tr.bt-hit td { animation: bt-flash 3s ease-out; }
+@keyframes bt-flash { from { background: #4a3a10; } to { background: transparent; } }
+
 @media (max-width: 900px) {
   .view { grid-template-columns: 1fr; height: auto; }
   .watchlist { max-height: 200px; }
