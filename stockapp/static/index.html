@@ -12,6 +12,10 @@
   <nav class="tabs">
     <button data-view="watch" class="active">看盤</button>
     <button data-view="analysis">盤後分析</button>
+    <button data-view="rank">排行・類股</button>
+    <button data-view="screener">條件選股</button>
+    <button data-view="company">個股資料</button>
+    <button data-view="calendar">除權息</button>
   </nav>
   <div class="search">
     <input id="search" placeholder="輸入代號或名稱，例如 2330" autocomplete="off">
@@ -28,6 +32,21 @@
 
   <section class="center">
     <div class="quote-head" id="quote-head"></div>
+    <div class="toolbar" id="toolbar">
+      <span class="seg" id="period"><button data-p="D" class="active">日</button><button data-p="W">週</button><button data-p="M">月</button></span>
+      <label title="除權息還原（F6）"><input type="checkbox" id="adjusted"> 還原</label>
+      <label>主圖 <select id="overlay"><option value="MA">均線</option><option value="BOLL">布林通道</option><option value="SAR">SAR</option><option value="">只有 K 線</option></select></label>
+      <label title="個股疊大盤"><input type="checkbox" id="cmp-taiex"> 疊大盤</label>
+      <input id="cmp-codes" placeholder="疊圖代號 2317,2454" size="13">
+      <input id="sim" placeholder="模擬收盤 105,108" size="12" title="輸入假設的收盤價，看技術線會不會交叉">
+      <button id="formula-toggle" title="自設公式">ƒ 公式</button>
+      <button id="keys-btn" title="快速鍵（?）">⌨</button>
+    </div>
+    <div class="formula-bar hidden" id="formula-bar">
+      <input id="expr" placeholder="例：快線:MA(C,5); 慢線:MA(C,20)" spellcheck="false">
+      <button id="expr-apply">畫到副圖</button>
+      <span id="expr-msg" class="hint"></span>
+    </div>
     <div class="legend" id="legend"></div>
     <div id="chart-main" class="chart main"></div>
     <div class="pane-label">成交量（張）</div>
@@ -36,6 +55,10 @@
     <div id="chart-inst" class="chart sub"></div>
     <div class="pane-label">融資餘額（張）</div>
     <div id="chart-margin" class="chart sub"></div>
+    <div class="pane-label"><select id="ind1" class="ind-select"></select><span id="ind1-legend" class="ind-legend"></span></div>
+    <div id="chart-ind1" class="chart sub"></div>
+    <div class="pane-label"><select id="ind2" class="ind-select"></select><span id="ind2-legend" class="ind-legend"></span></div>
+    <div id="chart-ind2" class="chart sub"></div>
   </section>
 
   <aside class="side">
@@ -65,7 +88,69 @@
   </section>
 </main>
 
+<main id="view-rank" class="view page hidden">
+  <section class="analysis">
+    <div class="card">
+      <h2>熱門與籌碼排行 <span id="rank-date" class="hint"></span></h2>
+      <div class="screen-controls">
+        <span class="seg" id="rank-kinds"></span>
+        <select id="rank-market"><option value="">全部</option><option value="tse">上市</option><option value="otc">上櫃</option></select>
+      </div>
+      <table id="rank-table" class="picks"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="card">
+      <h2>類股漲跌 <span class="hint">（依成交值加權）</span></h2>
+      <div id="industry-grid" class="industry-grid"></div>
+      <table id="industry-table" class="picks hidden"><thead></thead><tbody></tbody></table>
+    </div>
+  </section>
+</main>
+
+<main id="view-screener" class="view page hidden">
+  <section class="analysis">
+    <div class="disclaimer">條件選股是用你寫的公式篩選盤後資料，只是工具，不構成投資建議。</div>
+    <div class="card">
+      <h2>自設條件選股</h2>
+      <div id="presets" class="presets"></div>
+      <div class="screen-controls">
+        <input id="screen-expr" class="wide" placeholder="例：MA(C,5)>MA(C,20) AND V>2*MA(V,20)" spellcheck="false">
+        <select id="screen-market"><option value="">全部</option><option value="tse">上市</option><option value="otc">上櫃</option></select>
+        <button id="screen-run">開始選股</button>
+        <span id="screen-msg" class="hint"></span>
+      </div>
+      <details class="help"><summary>公式說明</summary><dl id="formula-help"></dl></details>
+    </div>
+    <table id="screen-table" class="picks"><thead></thead><tbody></tbody></table>
+  </section>
+</main>
+
+<main id="view-company" class="view page hidden">
+  <section class="analysis">
+    <div class="card" id="company-head"></div>
+    <div class="card"><h2>季報財務 <span class="hint">（單季，金額單位：百萬元）</span></h2>
+      <table id="fin-table" class="picks"><thead></thead><tbody></tbody></table></div>
+    <div class="card"><h2>除權息紀錄</h2><table id="exr-table" class="picks"><thead></thead><tbody></tbody></table></div>
+  </section>
+</main>
+
+<main id="view-calendar" class="view page hidden">
+  <section class="analysis">
+    <div class="card"><h2>除權息行事曆 <span class="hint">（未來 60 天，上市）</span></h2>
+      <table id="cal-table" class="picks"><thead></thead><tbody></tbody></table></div>
+  </section>
+</main>
+
+<div id="keys-dialog" class="modal hidden">
+  <div class="modal-body">
+    <h2>快速鍵 <span class="hint">點右邊的鍵可以改成自己習慣的按鍵</span></h2>
+    <table id="keys-table" class="picks"></table>
+    <div class="hint">任何時候直接打股票代號或名稱，就會跳到搜尋框。</div>
+    <div class="modal-actions"><button id="keys-reset">恢復預設</button><button id="keys-close">關閉</button></div>
+  </div>
+</div>
+
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/static/tools.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

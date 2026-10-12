@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, collector, db, sources
+from . import analysis, collector, db, sources, tools_api
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 WATCHLIST = os.path.join(os.path.dirname(db.DB_PATH), "watchlist.json")
@@ -20,6 +20,8 @@ app = FastAPI(title="台股籌碼看盤")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 conn = db.connect()
 conn_lock = threading.Lock()
+tools_api.bind(conn, conn_lock)
+app.include_router(tools_api.router)
 
 
 def q(sql, args=()):
