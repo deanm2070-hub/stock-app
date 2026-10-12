@@ -31,7 +31,9 @@ def collect_twse(conn, d: date, force=False):
         return True
     prices, stocks, market = sources.parse_twse_daily(sources.fetch_twse_daily(d), d)
     if not prices:
-        _log(conn, d, "twse_price", "closed")
+        # 只有確定已過收盤公布時間才記為休市；當天資料還沒出來時不記，免得之後回補被略過
+        if d < date.today() or datetime.now().hour >= 17:
+            _log(conn, d, "twse_price", "closed")
         return False
     db.upsert_stocks(conn, stocks)
     db.upsert(conn, "daily_price", prices, ["date", "code"])
@@ -161,19 +163,35 @@ def make_report(conn, with_news=True):
 
 
 def collect_today(conn, d=None):
-    d = d or date.today()
-    if d.weekday() >= 5:
-        print(f"{d} 是週末，略過")
-        return False
-    opened = collect_twse(conn, d, force=True)
-    if opened:
-        collect_tpex_latest(conn)
-        collect_fundamentals(conn)
-        collect_holders(conn)
-        make_report(conn)
-    print(f"{d} {'完成' if opened else '休市'}")
-    return opened
+    """收集指定日（預設今天）的盤後資料並產生報告。
 
+    週末、假日或半夜執行時，當天沒有行情，改補最近一個還沒收過的交易日；
+    櫃買、基本面、集保、新聞與報告都只看「最新資料」，所以一律照跑，報告以資料庫裡最新的交易日為準。"""
+    d = d or date.today()
+    opened = d.weekday() < 5 and collect_twse(conn, d, force=True)
+    if not opened:
+        prev = d
+        for _ in range(10):  # 往回找最近的交易日（涵蓋春節等長假）
+            prev -= timedelta(days=1)
+            if prev.weekday() >= 5:
+                continue
+            if conn.execute("SELECT 1 FROM daily_price WHERE date=? LIMIT 1", (prev.isoformat(),)).fetchone():
+                break  # 最近的交易日已經收過
+            if _done(conn, prev, "twse_price"):
+                continue  # 記錄為休市，再往前
+            try:
+                if collect_twse(conn, prev):
+                    print(f"{d} 沒有行情，改收最近交易日 {prev}")
+                    break
+            except RuntimeError as e:
+                print(prev, "失敗", e)
+                break
+    collect_tpex_latest(conn)
+    collect_fundamentals(conn)
+    collect_holders(conn)
+    rep = make_report(conn)
+    print(f"{d} {'完成' if opened else '休市，報告以 ' + str(rep.get('date')) + ' 為準'}")
+    return opened
 
 def backfill(conn, days):
     end = date.today()

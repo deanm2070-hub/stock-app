@@ -241,6 +241,29 @@ class ScreenTest(unittest.TestCase):
         self.assertGreater(rows[("1111", "測試甲(1111)接單強勁")], 0)
         self.assertLess(rows[("2222", "測試乙下修財測")], 0)
 
+    def test_collect_today_on_holiday(self):
+        """假日或半夜執行：當天沒有行情，仍要更新集保、新聞與報告，報告以最近交易日為準。"""
+        from unittest import mock
+        from stockapp import collector
+        last = self.days[-1]
+        tdcc = "資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%\n" + \
+            f"{last.replace('-', '')},1111,15,1,1,60\n{last.replace('-', '')},1111,17,500,1,100\n"
+        fetched = []
+        fail = mock.Mock(side_effect=RuntimeError("offline"))
+        with mock.patch.object(sources, "fetch_twse_daily", side_effect=lambda d: fetched.append(d) or {"stat": "no"}), \
+             mock.patch.object(sources, "fetch_tpex_daily", fail), \
+             mock.patch.object(sources, "fetch_tpex_institutional", fail), \
+             mock.patch.object(sources, "fetch_tpex_margin", fail), \
+             mock.patch.object(sources, "fetch_fundamentals", return_value={}), \
+             mock.patch.object(sources, "fetch_tdcc", return_value=tdcc), \
+             mock.patch.object(sources, "fetch_cnyes", return_value={}), \
+             mock.patch.object(sources, "fetch_yahoo_rss", return_value="<rss/>"):
+            holiday = date.fromisoformat(last) + timedelta(days=3)  # 下週一，假設休市
+            self.assertFalse(collector.collect_today(self.conn, holiday))
+        self.assertEqual(fetched, [holiday])  # 前一個交易日已有資料，不重抓
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) n FROM holders").fetchone()["n"], 1)
+        self.assertEqual(analysis.load_report(self.conn)["date"], last)
+
     def test_kline(self):
         k = analysis.kline(self.conn, "1111")
         self.assertEqual(len(k), 70)
