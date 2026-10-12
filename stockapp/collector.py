@@ -8,7 +8,7 @@
 import argparse
 from datetime import date, datetime, timedelta
 
-from . import db, sources
+from . import db, sources, tools
 
 
 def _log(conn, d, kind, status):
@@ -92,6 +92,10 @@ def collect_today(conn, d=None):
     if opened:
         collect_tpex_latest(conn)
         collect_fundamentals(conn)
+        try:
+            tools.collect(conn, d)  # 除權息、行事曆、產業別、季報
+        except Exception as e:  # noqa: BLE001 - 附加資料失敗不影響主要收集
+            print("[附加資料] 失敗", e)
     print(f"{d} {'完成' if opened else '休市'}")
     return opened
 

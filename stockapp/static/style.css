@@ -76,6 +76,41 @@ input { background: #0b0e13; color: var(--text); border: 1px solid var(--line); 
 .badge { font-size: 11px; background: #3b3215; color: var(--accent); padding: 0 6px; border-radius: 8px; margin-left: 4px; }
 .empty { padding: 20px; color: var(--muted); text-align: center; }
 
+/* ---------- 新世紀類工具 ---------- */
+.view.page { display: block; overflow: auto; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.toolbar input, .toolbar select, .pane-label select { font-size: 12px; padding: 2px 6px; }
+select { background: #0b0e13; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
+.seg { display: inline-flex; flex-wrap: wrap; gap: 2px; }
+.seg button { padding: 2px 8px; font-size: 12px; }
+.seg button.active, .presets button.active { border-color: var(--accent); color: var(--accent); }
+.toolbar button { padding: 2px 8px; font-size: 12px; }
+input.bad { border-color: var(--up); }
+.formula-bar { display: flex; gap: 8px; align-items: center; padding: 4px 12px; border-bottom: 1px solid var(--line); }
+.formula-bar input { flex: 1; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.ind-select { margin-right: 8px; }
+.ind-legend b { font-weight: 500; margin-right: 10px; }
+.chart.sub { min-height: 64px; }
+input.wide { flex: 1; min-width: 260px; font-family: ui-monospace, Consolas, monospace; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.presets button { font-size: 12px; }
+.help { font-size: 13px; color: var(--muted); }
+.help dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 0; }
+.help dt { color: var(--text); }
+.help dd { margin: 0; }
+.industry-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; margin-bottom: 10px; }
+.ind-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 6px 8px; }
+.ind-tile b { color: var(--text); font-weight: 600; }
+.ind-tile small { color: var(--muted); font-size: 11px; }
+#industry-table td:first-child, #industry-table th { text-align: left; }
+.modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal-body { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; width: min(520px, calc(100% - 32px)); max-height: 85vh; overflow: auto; }
+.modal-body h2 { margin: 0 0 10px; font-size: 16px; }
+.modal-body td { text-align: left; }
+.modal-body td:last-child { text-align: right; }
+.modal-body button.active { border-color: var(--accent); color: var(--accent); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
 @media (max-width: 900px) {
   .view { grid-template-columns: 1fr; height: auto; }
   .watchlist { max-height: 200px; }

@@ -82,7 +82,7 @@ function drawKline() {
   const n = k.length;
   if (n) mainChart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 120), to: n + 3 });
   renderLegend(k[n - 1]);
-  renderInstTable(k.slice(-10).reverse());
+  renderInstTable(k.filter((r) => !r.sim).slice(-10).reverse());
 }
 
 function renderLegend(bar) {
@@ -127,6 +127,7 @@ async function refreshQuotes() {
 }
 
 function mergeRealtimeBar() {
+  if (!Tools.liveMergeOK()) return;
   const q = state.quotes[state.code];
   if (!q || q.price == null || !q.time) return;
   const d = q.time.slice(0, 8);
@@ -216,11 +217,12 @@ async function selectStock(code) {
   showView("watch");
   renderWatch();
   try {
-    state.kline = await api(`/api/kline/${code}`);
+    state.kline = await Tools.loadChart(code);
   } catch {
     state.kline = [];
   }
   drawKline();
+  Tools.draw();
   renderQuote();
   renderInfo();
   refreshQuotes();
@@ -290,9 +292,9 @@ $("#rescreen").addEventListener("click", loadPicks);
 /* ---------- 其他 ---------- */
 function showView(v) {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
-  $("#view-watch").classList.toggle("hidden", v !== "watch");
-  $("#view-analysis").classList.toggle("hidden", v !== "analysis");
+  document.querySelectorAll("main.view").forEach((m) => m.classList.toggle("hidden", m.id !== `view-${v}`));
   if (v === "analysis") loadAnalysis();
+  Tools.onView(v);
 }
 document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
 
@@ -309,6 +311,7 @@ async function setStatus(err) {
 }
 
 (async function init() {
+  await Tools.init();
   state.watch = await api("/api/watchlist");
   await setStatus();
   selectStock(state.watch[0] || "2330");
