@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analysis, bigtrade, collector, db, sources
+from . import alerts, analysis, collector, db, sources
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 WATCHLIST = os.path.join(os.path.dirname(db.DB_PATH), "watchlist.json")
@@ -63,7 +63,7 @@ QUOTE_TTL = 4
 
 
 def get_quotes(codes):
-    """抓即時報價，每檔 4 秒內走快取，避免被證交所封鎖。新抓到的報價順便送去偵測大單。"""
+    """抓即時報價，每檔 4 秒內走快取，避免被證交所封鎖。新抓到的報價順便送去偵測盤中提示。"""
     with _quote_lock:
         now = time.time()
         need = [c for c in codes if c not in _quote_cache or now - _quote_cache[c][0] >= QUOTE_TTL]
@@ -83,7 +83,7 @@ def get_quotes(codes):
             now = time.time()
             for d in data:
                 _quote_cache[d["code"]] = (now, d)
-            _record_big_trades(detector.feed(data))
+            _record_alerts(detector.feed(data))
         return [_quote_cache[c][1] for c in codes if c in _quote_cache]
 
 
@@ -97,51 +97,55 @@ def quote(codes: str):
         raise HTTPException(502, str(e))
 
 
-# ---------- 大單提示 ----------
+# ---------- 盤中提示（大單、急拉急殺、漲跌停） ----------
 
-BIGTRADE_SETTINGS = os.path.join(os.path.dirname(db.DB_PATH), "bigtrade.json")
-detector = bigtrade.Detector(bigtrade.load_settings(BIGTRADE_SETTINGS))
+ALERT_SETTINGS = os.path.join(os.path.dirname(db.DB_PATH), "alerts.json")
+detector = alerts.Detector(alerts.load_settings(ALERT_SETTINGS))
+ALERT_COLS = ["date", "time", "code", "name", "kind", "side", "price", "lots", "amount", "single", "pct", "note"]
 
 
-def _record_big_trades(alerts):
-    if not alerts:
+def _record_alerts(rows):
+    if not rows:
         return
     with conn_lock:
-        conn.executemany(
-            "INSERT INTO big_trades(date,time,code,name,side,price,lots,amount,single,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            [(a["date"], a["time"], a["code"], a["name"], a["side"], a["price"], a["lots"], a["amount"],
-              int(a["single"]), a["note"]) for a in alerts])
+        conn.executemany(f"INSERT INTO alerts({','.join(ALERT_COLS)}) VALUES({','.join('?' * len(ALERT_COLS))})",
+                         [tuple(int(r[c]) if c == "single" else r[c] for c in ALERT_COLS) for r in rows])
         conn.commit()
 
 
-@app.get("/api/bigtrades")
-def big_trades(since: int = 0, limit: int = 200):
+@app.get("/api/alerts")
+def get_alerts(since: int = 0, limit: int = 300):
     """since=上次拿到的最大 id，只回傳更新的；since=0 回傳最近一個有資料的交易日。"""
     if since:
-        rows = q("SELECT * FROM big_trades WHERE id>? ORDER BY id LIMIT ?", (since, limit))
+        rows = q("SELECT * FROM alerts WHERE id>? ORDER BY id LIMIT ?", (since, limit))
     else:
-        rows = q("SELECT * FROM big_trades WHERE date=(SELECT MAX(date) FROM big_trades) ORDER BY id DESC LIMIT ?",
+        rows = q("SELECT * FROM alerts WHERE date=(SELECT MAX(date) FROM alerts) ORDER BY id DESC LIMIT ?",
                  (limit,))[::-1]
     for r in rows:
         r["single"] = bool(r["single"])
     return rows
 
 
-class BigTradeSettings(BaseModel):
+class AlertSettings(BaseModel):
     enabled: bool = True
+    trade_enabled: bool = True
     min_lots: int = 50
     min_amount: int = 10_000_000
+    price_enabled: bool = True
+    price_window: int = 2
+    price_pct: float = 2.0
+    limit_enabled: bool = True
 
 
-@app.get("/api/bigtrades/settings")
-def get_big_settings():
+@app.get("/api/alerts/settings")
+def get_alert_settings():
     return detector.settings
 
 
-@app.post("/api/bigtrades/settings")
-def set_big_settings(s: BigTradeSettings):
+@app.post("/api/alerts/settings")
+def set_alert_settings(s: AlertSettings):
     detector.settings = dict(s)
-    bigtrade.save_settings(BIGTRADE_SETTINGS, detector.settings)
+    alerts.save_settings(ALERT_SETTINGS, detector.settings)
     return detector.settings
 
 
@@ -151,7 +155,7 @@ def _is_trading_time(now=None):
 
 
 def _monitor():
-    """盤中每 5 秒抓一次自選股，就算網頁沒開或在背景也會偵測大單。"""
+    """盤中每 5 秒抓一次自選股，就算網頁沒開或在背景也會偵測。"""
     while True:
         if detector.settings.get("enabled") and _is_trading_time():
             try:

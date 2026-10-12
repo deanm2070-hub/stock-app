@@ -82,6 +82,9 @@ input { background: #0b0e13; color: var(--text); border: 1px solid var(--line); 
 .bt-settings { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .bt-settings input[type=number] { width: 80px; }
 .bt-settings button { align-self: flex-start; }
+.bt-settings fieldset { border: 1px solid var(--line); border-radius: 4px; margin: 0; padding: 4px 8px 6px; display: flex; flex-direction: column; gap: 4px; }
+.bt-settings legend { padding: 0 4px; }
+.bt-settings #bt-window, .bt-settings #bt-pct { width: 56px; }
 .bt-list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; min-height: 120px; font-variant-numeric: tabular-nums; }
 .bt-list li { padding: 5px 8px; border-bottom: 1px solid #1d232c; cursor: pointer; font-size: 12px; }
 .bt-list li:hover { background: #1b212a; }

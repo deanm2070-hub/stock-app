@@ -1,4 +1,4 @@
-"""SQLite 儲存層：每日行情、三大法人、融資融券、基本面、大盤摘要與盤中大單。"""
+"""SQLite 儲存層：每日行情、三大法人、融資融券、基本面、大盤摘要與盤中提示。"""
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -47,15 +47,18 @@ CREATE TABLE IF NOT EXISTS collect_log (
     date TEXT, kind TEXT, status TEXT, at TEXT,
     PRIMARY KEY (date, kind)
 );
-CREATE TABLE IF NOT EXISTS big_trades (
+CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT, time TEXT, code TEXT, name TEXT,
-    side TEXT,             -- 'buy' 外盤 / 'sell' 內盤 / 'neutral'
-    price REAL, lots INTEGER, amount INTEGER,
-    single INTEGER,        -- 1 = 量差等於最後一筆成交量，可能是單筆
+    kind TEXT,             -- 'trade' 大單 / 'spike' 急拉 / 'plunge' 急殺 / 'limit' 漲跌停
+    side TEXT,             -- 'buy' 偏多 / 'sell' 偏空 / 'neutral'
+    price REAL,
+    lots INTEGER, amount INTEGER,   -- 大單才有
+    single INTEGER,        -- 大單：1 = 量差等於最後一筆成交量，可能是單筆
+    pct REAL,              -- 急拉急殺：區間漲跌幅 %；漲跌停：當日漲跌幅 %
     note TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_big_date ON big_trades(date, id);
+CREATE INDEX IF NOT EXISTS idx_alert_date ON alerts(date, id);
 CREATE INDEX IF NOT EXISTS idx_price_code ON daily_price(code, date);
 CREATE INDEX IF NOT EXISTS idx_inst_code ON institutional(code, date);
 CREATE INDEX IF NOT EXISTS idx_margin_code ON margin(code, date);
