@@ -297,8 +297,8 @@ const Tools = (() => {
     $("#company-head").innerHTML = `<h2>${code} ${esc(state.names[code] || "")}</h2>
       <div>產業：<b>${esc(p.industry || "未分類")}</b>${nx ? `　下次除權息：<b>${nx.date}</b> ${esc(nx.kind)}${nx.cash_div ? ` 現金 ${fmt(nx.cash_div, 4)} 元` : ""}` : ""}</div>
       ${p.peers?.length ? `<div class="presets" style="margin-top:8px">同產業：${p.peers.map((x) => `<button data-code="${x.code}">${x.code} ${esc(x.name)}</button>`).join("")}</div>` : ""}`;
-    $("#fin-table thead").innerHTML = `<tr><th>季別</th><th>營收</th><th>毛利率%</th><th>營益率%</th><th>淨利率%</th><th>稅後淨利</th><th>EPS</th><th>累計 EPS</th><th>負債比%</th><th>每股淨值</th></tr>`;
-    $("#fin-table tbody").innerHTML = fin.length ? fin.map((f) => `<tr><td>${f.year} Q${f.quarter}</td><td>${m(f.revenue_q)}</td>
+    $("#fin-table thead").innerHTML = `<tr><th>季別</th><th>營收</th><th>毛利率%</th><th>營益率%</th><th>淨利率%</th><th>稅後淨利</th><th>EPS</th><th>年初至今 EPS</th><th>負債比%</th><th>每股淨值</th></tr>`;
+    $("#fin-table tbody").innerHTML = fin.length ? fin.map((f) => `<tr><td>${f.year} ${f.basis === "累計" ? `Q1–Q${f.quarter} 累計` : `Q${f.quarter}`}</td><td>${m(f.revenue_q)}</td>
       <td>${fmt(f.gross_margin)}</td><td>${fmt(f.op_margin)}</td><td>${fmt(f.net_margin)}</td><td class="${cls(f.net_income_q)}">${m(f.net_income_q)}</td>
       <td class="${cls(f.eps_q)}"><b>${fmt(f.eps_q)}</b></td><td>${fmt(f.eps)}</td><td>${fmt(f.debt_ratio)}</td><td>${fmt(f.bvps)}</td></tr>`).join("")
       : `<tr><td colspan="10" class="empty">還沒有季報資料。公開資料只提供最新一季，執行 <code>python -m stockapp.tools collect</code> 後每季累積。</td></tr>`;
@@ -310,11 +310,14 @@ const Tools = (() => {
 
   async function loadCalendar() {
     const r = await api("/api/calendar").catch(() => ({ upcoming: [] }));
-    $("#cal-table thead").innerHTML = `<tr><th>日期</th><th>股票</th><th>權/息</th><th>現金股利(元)</th><th>無償配股率</th><th></th></tr>`;
+    $("#cal-table thead").innerHTML = `<tr><th>日期</th><th>股票</th><th>權/息</th><th>現金股利(元)</th><th>無償配股率</th><th>現增配股率</th><th>認購價</th><th></th></tr>`;
+    const cash = (x) => x.cash_div ? fmt(x.cash_div, 4) : /息/.test(x.kind) ? '<span class="hint">未公告</span>' : "-";
+    const ratio = (v) => (v ? fmt(v, 4) : "-");
     $("#cal-table tbody").innerHTML = r.upcoming.length ? r.upcoming.map((x) => `<tr data-code="${x.code}"><td>${x.date}</td>
-      <td>${x.code} ${esc(x.name)}</td><td>${esc(x.kind)}</td><td>${fmt(x.cash_div, 4)}</td><td>${fmt(x.stock_ratio, 4)}</td>
+      <td>${x.code} ${esc(x.name)}</td><td>${esc(x.kind)}</td><td>${cash(x)}</td><td>${ratio(x.stock_ratio)}</td>
+      <td>${ratio(x.cash_capital_ratio)}</td><td>${x.subscription_price ? fmt(x.subscription_price) : "-"}</td>
       <td><button data-add="${x.code}">＋自選</button></td></tr>`).join("")
-      : `<tr><td colspan="6" class="empty">沒有資料，請先收集盤後資料或執行 <code>python -m stockapp.tools collect</code></td></tr>`;
+      : `<tr><td colspan="8" class="empty">沒有資料，請先收集盤後資料或執行 <code>python -m stockapp.tools collect</code></td></tr>`;
   }
 
   function onView(v) {

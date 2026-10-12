@@ -5,7 +5,7 @@
 import re
 from datetime import date
 
-from .sources import TPEX_OPENAPI, _field_index, _get, inum, is_common_stock, num, parse_roc_compact, ymd
+from .sources import TPEX_OPENAPI, _field_index, _get, _pick_like, inum, is_common_stock, num, parse_roc_compact, ymd
 
 TWSE_OPENAPI = "https://openapi.twse.com.tw/v1/"
 
@@ -55,27 +55,81 @@ def fetch_twse_exright_plan():
     return _get("https://www.twse.com.tw/rwd/zh/exRight/TWT48U", {"response": "json"})
 
 
+def fetch_twse_exright_plan_openapi():
+    return _get(TWSE_OPENAPI + "exchangeReport/TWT48U_ALL")
+
+
+def _field_like(fields, *needles):
+    """欄位名稱包含關鍵字即可（證交所欄位常帶單位或空白，例如「現金股利(元/股)」）。"""
+    for i, f in enumerate(fields):
+        f2 = re.sub(r"\s|<[^>]+>", "", f)
+        if any(n in f2 for n in needles):
+            return i
+    return None
+
+
+def _cell(row, i):
+    return row[i] if i is not None and i < len(row) else None
+
+
 def parse_twse_exright_plan(js):
+    """除權除息預告表。現金股利空白表示公司尚未公告金額，保留為 None 而不是 0。"""
     if not js or js.get("stat") != "OK":
         return []
     f = js.get("fields") or []
-    i_date = _field_index(f, "除權除息日期")
-    i_code = _field_index(f, "股票代號")
-    i_name = _field_index(f, "名稱", "股票名稱")
+    i_date = _field_like(f, "除權除息日期", "日期")
+    i_code = _field_like(f, "股票代號", "代號")
+    i_name = _field_like(f, "名稱")
     i_kind = _field_index(f, "除權息")
-    i_stock = _field_index(f, "無償配股率")
-    i_cash = _field_index(f, "現金股利")
+    i_kind = i_kind if i_kind is not None else _field_like(f, "權/息", "權息")
+    i_stock = _field_like(f, "無償配股")
+    i_cap = _field_like(f, "現金增資配股")
+    i_sub = _field_like(f, "認購價")
+    i_cash = _field_like(f, "現金股利")
     out = []
     for row in js.get("data") or []:
-        code = str(row[i_code]).strip()
-        d = parse_roc_text(row[i_date])
+        code = str(_cell(row, i_code) or "").strip()
+        d = parse_roc_text(_cell(row, i_date))
         if not d or not code:
             continue
-        out.append({"date": d.isoformat(), "code": code, "name": str(row[i_name]).strip() if i_name is not None else "",
-                    "kind": str(row[i_kind]).strip() if i_kind is not None else "",
-                    "stock_ratio": num(row[i_stock]) if i_stock is not None else None,
-                    "cash_div": num(row[i_cash]) if i_cash is not None else None, "market": "tse"})
+        out.append({"date": d.isoformat(), "code": code, "name": str(_cell(row, i_name) or "").strip(),
+                    "kind": re.sub(r"<[^>]+>", "", str(_cell(row, i_kind) or "")).strip(),
+                    "stock_ratio": num(_cell(row, i_stock)), "cash_div": num(_cell(row, i_cash)),
+                    "cash_capital_ratio": num(_cell(row, i_cap)), "subscription_price": num(_cell(row, i_sub)),
+                    "market": "tse"})
     return out
+
+
+def parse_twse_exright_plan_openapi(rows):
+    """OpenAPI 版預告表（英文欄位），用來補 rwd 版空白的金額。"""
+    out = []
+    for r in rows or []:
+        code = str(r.get("Code") or "").strip()
+        d = parse_roc_text(r.get("Date"))
+        if not code or not d:
+            continue
+        out.append({"date": d.isoformat(), "code": code, "name": str(r.get("Name") or "").strip(),
+                    "kind": str(_pick_like(r, "exdividend") or r.get("Exdividend") or "").strip(),
+                    "stock_ratio": num(_pick_like(r, "stockdividend")),
+                    "cash_div": num(_pick_like(r, "cashdividend")),
+                    "cash_capital_ratio": num(_pick_like(r, "cashcapital")),
+                    "subscription_price": num(_pick_like(r, "subscriptionprice")), "market": "tse"})
+    return out
+
+
+def merge_exright_plan(primary, extra):
+    """以 (日期, 代號) 對齊，rwd 版空白的欄位用 OpenAPI 版補上；rwd 沒有的列也加入。"""
+    idx = {(r["date"], r["code"]): r for r in primary}
+    for r in extra:
+        p = idx.get((r["date"], r["code"]))
+        if p is None:
+            primary.append(r)
+            idx[(r["date"], r["code"])] = r
+            continue
+        for k, v in r.items():
+            if p.get(k) in (None, "") and v not in (None, ""):
+                p[k] = v
+    return primary
 
 
 # ---------- 公司基本資料（產業別） ----------

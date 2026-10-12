@@ -232,7 +232,14 @@ class DbToolsTest(unittest.TestCase):
              "net_income": 10, "eps": 1.0, "assets": 1000, "liabilities": 400, "equity": 600, "bvps": 60},
             {"code": "1111", "year": 2026, "quarter": 2, "revenue": 250, "gross_profit": 100, "op_income": 50,
              "net_income": 30, "eps": 3.0, "assets": 1100, "liabilities": 440, "equity": 660, "bvps": 66}], [])
+        db.upsert(self.conn, "financials", [
+            {"code": "1111", "year": 2025, "quarter": 3, "revenue": 300, "gross_profit": 90, "op_income": 30,
+             "net_income": 15, "eps": 1.5, "assets": 900, "liabilities": 300, "equity": 600, "bvps": 60}], [])
         f = tools.financials(self.conn, "1111")
+        # 沒有上一季可相減時，顯示年初至今累計數
+        q3 = f[-1]
+        self.assertEqual((q3["basis"], q3["revenue_q"], q3["eps_q"], q3["gross_margin"]), ("累計", 300, 1.5, 30.0))
+        self.assertEqual(f[0]["basis"], "單季")
         self.assertEqual(f[0]["revenue_q"], 150)
         self.assertEqual(f[0]["eps_q"], 2.0)
         self.assertEqual(f[0]["gross_margin"], 40.0)
@@ -267,6 +274,31 @@ class ParseExtraTest(unittest.TestCase):
               "data": [["115年10月15日", "2317", "鴻海", "息", "0", "0", "0", "5.5"]]}
         r = xs.parse_twse_exright_plan(js)[0]
         self.assertEqual((r["date"], r["code"], r["cash_div"]), ("2026-10-15", "2317", 5.5))
+
+    def test_plan_units_blank_and_rights(self):
+        # 欄位帶單位、現金股利空白（尚未公告）、現金增資的「權」
+        js = {"stat": "OK", "fields": ["除權除息日期", "股票代號", "名稱", "除權息", "無償配股率(股/千股)",
+                                        "現金增資配股率(股/千股)", "現金增資認購價(元)", "現金股利 (元/股)", "詳細資料"],
+              "data": [["115年10月16日", "2881", "富邦金", "息", "", "", "", "", ""],
+                       ["115年10月17日", "1727", "中華化", "權", "0.00000000", "85.12345678", "30.00", "0.00000000", ""]]}
+        a, b = xs.parse_twse_exright_plan(js)
+        self.assertIsNone(a["cash_div"])
+        self.assertEqual((b["kind"], b["cash_capital_ratio"], b["subscription_price"]), ("權", 85.12345678, 30))
+        extra = xs.parse_twse_exright_plan_openapi([{"Date": "1151016", "Code": "2881", "Name": "富邦金",
+                                                    "Exdividend": "息", "CashDividend": "3.00000000"}])
+        merged = xs.merge_exright_plan([a, b], extra)
+        self.assertEqual(merged[0]["cash_div"], 3.0)
+        self.assertEqual(len(merged), 2)
+
+    def test_old_plan_table_migrates(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE exright_plan (date TEXT, code TEXT, name TEXT, kind TEXT, stock_ratio REAL, "
+                     "cash_div REAL, market TEXT, PRIMARY KEY (date, code, kind))")
+        conn.executescript(db.SCHEMA)
+        tools.ensure_schema(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(exright_plan)")}
+        self.assertIn("subscription_price", cols)
 
     def test_company(self):
         rows = [{"公司代號": "2330", "公司簡稱": "台積電", "產業別": "24", "_market": "tse"},

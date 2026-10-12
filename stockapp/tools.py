@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS exrights (
 CREATE TABLE IF NOT EXISTS exright_plan (
     date TEXT, code TEXT, name TEXT, kind TEXT,
     stock_ratio REAL, cash_div REAL, market TEXT,
+    cash_capital_ratio REAL, subscription_price REAL,   -- 現金增資配股率、認購價
     PRIMARY KEY (date, code, kind)
 );
 CREATE TABLE IF NOT EXISTS company (
@@ -38,6 +39,11 @@ CREATE INDEX IF NOT EXISTS idx_exr_code ON exrights(code, date);
 
 def ensure_schema(conn):
     conn.executescript(SCHEMA)
+    # 舊版資料庫的 exright_plan 少了現增欄位
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(exright_plan)")}
+    for c in ("cash_capital_ratio", "subscription_price"):
+        if c not in cols:
+            conn.execute(f"ALTER TABLE exright_plan ADD COLUMN {c} REAL")
 
 
 # ---------- K 線處理 ----------
@@ -393,16 +399,17 @@ def financials(conn, code, limit=12):
     for r in rows[:limit]:
         prev = cum.get((r["year"], r["quarter"] - 1)) if r["quarter"] > 1 else None
         q = dict(r)
-        # 損益表為年度累計，單季 = 本季累計 − 上季累計
+        # 損益表為年度累計：有上一季資料時換算單季（本季累計 − 上季累計），否則直接用累計數
+        single = r["quarter"] == 1 or prev is not None
+        q["basis"] = "單季" if single else "累計"
         for k in ("revenue", "gross_profit", "op_income", "net_income", "eps"):
-            if r["quarter"] == 1:
+            if not single or r["quarter"] == 1:
                 q[k + "_q"] = r[k]
             else:
-                q[k + "_q"] = (r[k] - prev[k]) if prev and r[k] is not None and prev[k] is not None else None
+                q[k + "_q"] = (r[k] - prev[k]) if r[k] is not None and prev[k] is not None else None
         rev = q["revenue_q"]
-        q["gross_margin"] = round(q["gross_profit_q"] / rev * 100, 2) if rev and q["gross_profit_q"] is not None else None
-        q["op_margin"] = round(q["op_income_q"] / rev * 100, 2) if rev and q["op_income_q"] is not None else None
-        q["net_margin"] = round(q["net_income_q"] / rev * 100, 2) if rev and q["net_income_q"] is not None else None
+        for k, src in (("gross_margin", "gross_profit_q"), ("op_margin", "op_income_q"), ("net_margin", "net_income_q")):
+            q[k] = round(q[src] / rev * 100, 2) if rev and q[src] is not None else None
         q["debt_ratio"] = round(r["liabilities"] / r["assets"] * 100, 2) if r["assets"] and r["liabilities"] is not None else None
         q["roe"] = round(r["net_income"] / r["equity"] * 100, 2) if r["equity"] and r["net_income"] is not None else None
         if q["eps_q"] is not None:
@@ -460,6 +467,10 @@ def collect(conn, d=None, force=False):
     collect_exrights(conn, d - timedelta(days=7), d)
     try:
         plan = xs.parse_twse_exright_plan(xs.fetch_twse_exright_plan())
+        try:
+            plan = xs.merge_exright_plan(plan, xs.parse_twse_exright_plan_openapi(xs.fetch_twse_exright_plan_openapi()))
+        except RuntimeError as e:
+            print("[除權息預告 OpenAPI]", e)
         db.upsert(conn, "exright_plan", plan, [])
         print(f"[除權息預告] {len(plan)} 筆")
     except RuntimeError as e:
