@@ -1,9 +1,12 @@
-"""SQLite 儲存層：每日行情、三大法人、融資融券、基本面與大盤摘要。"""
+"""SQLite 儲存層：每日行情、三大法人、融資融券、基本面、大盤摘要、集保大戶、新聞與每日報告。"""
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
 
 DB_PATH = os.environ.get("STOCKAPP_DB", os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "stock.db"))
+WATCHLIST = os.path.join(os.path.dirname(DB_PATH), "watchlist.json")
+DEFAULT_WATCH = ["2330", "2317", "2454", "2308", "2881"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS stocks (
@@ -47,6 +50,29 @@ CREATE TABLE IF NOT EXISTS collect_log (
     date TEXT, kind TEXT, status TEXT, at TEXT,
     PRIMARY KEY (date, kind)
 );
+CREATE TABLE IF NOT EXISTS holders (
+    date TEXT, code TEXT,      -- 集保資料日（週五）
+    holders INTEGER,           -- 總股東人數
+    big400_pct REAL,           -- 400 張以上大戶持股比例 %
+    big1000_pct REAL,          -- 1000 張以上大戶持股比例 %
+    retail_pct REAL,           -- 50 張以下散戶持股比例 %
+    PRIMARY KEY (date, code)
+);
+CREATE TABLE IF NOT EXISTS news (
+    url TEXT,
+    code TEXT,                 -- 相關個股，空字串表示未對應到個股
+    published TEXT, title TEXT, source TEXT, summary TEXT,
+    sentiment REAL,            -- -1 ~ +1
+    fetched TEXT,
+    PRIMARY KEY (url, code)
+);
+CREATE TABLE IF NOT EXISTS reports (
+    date TEXT PRIMARY KEY,     -- 資料日（推薦的是下一個交易日）
+    generated TEXT,
+    body TEXT                  -- JSON
+);
+CREATE INDEX IF NOT EXISTS idx_holders_code ON holders(code, date);
+CREATE INDEX IF NOT EXISTS idx_news_code ON news(code, published);
 CREATE INDEX IF NOT EXISTS idx_price_code ON daily_price(code, date);
 CREATE INDEX IF NOT EXISTS idx_inst_code ON institutional(code, date);
 CREATE INDEX IF NOT EXISTS idx_margin_code ON margin(code, date);
@@ -89,3 +115,17 @@ def upsert_stocks(conn, rows):
         "ON CONFLICT(code) DO UPDATE SET name=excluded.name, market=COALESCE(excluded.market, stocks.market)",
         [(r["code"], r["name"], r.get("market")) for r in rows],
     )
+
+
+def load_watchlist():
+    try:
+        with open(WATCHLIST, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return list(DEFAULT_WATCH)
+
+
+def save_watchlist(codes):
+    os.makedirs(os.path.dirname(WATCHLIST), exist_ok=True)
+    with open(WATCHLIST, "w", encoding="utf-8") as f:
+        json.dump(codes, f)

@@ -72,6 +72,48 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(stocks[0]["market"], "otc")
 
 
+    def test_tdcc(self):
+        text = "\ufeff資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%\n" + "\n".join(
+            f"20261009,2330,{lvl},{100 if lvl < 17 else 9999},{1000},{pct}" for lvl, pct in
+            [(1, 2.0), (8, 3.0), (11, 5.0), (12, 1.5), (14, 2.5), (15, 70.25), (16, 0), (17, 100)]) + \
+            "\n20261009,0050,15,1,1,90\n"
+        r = sources.parse_tdcc(text)
+        self.assertEqual(len(r), 1)
+        r = r[0]
+        self.assertEqual(r["date"], "2026-10-09")
+        self.assertEqual(r["big400_pct"], 74.25)
+        self.assertEqual(r["big1000_pct"], 70.25)
+        self.assertEqual(r["retail_pct"], 5.0)
+        self.assertEqual(r["holders"], 9999)
+
+    def test_cnyes(self):
+        js = {"items": {"data": [
+            {"newsId": 1, "title": "台積電營收創新高", "publishAt": 1791676800, "summary": "",
+             "market": [{"code": "2330", "name": "台積電"}], "stock": ["2330"]},
+            {"newsId": 2, "title": "", "publishAt": 1}]}}
+        r = sources.parse_cnyes(js)
+        self.assertEqual(len(r), 1)
+        self.assertEqual(r[0]["codes"], ["2330"])
+        self.assertTrue(r[0]["published"].endswith("+08:00"))
+
+    def test_rss(self):
+        xml = """<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>x</title>
+          <item><title>鴻海接單強勁 法人看好</title><link>https://tw.stock.yahoo.com/news/a.html</link>
+          <pubDate>Thu, 08 Oct 2026 10:00:00 GMT</pubDate><description>&lt;p&gt;內文&lt;/p&gt;</description></item>
+          <item><title></title><link>https://x</link></item></channel></rss>"""
+        r = sources.parse_rss(xml)
+        self.assertEqual(len(r), 1)
+        self.assertEqual(r[0]["published"], "2026-10-08T18:00:00+08:00")
+        self.assertEqual(r[0]["summary"], "內文")
+        self.assertEqual(sources.parse_rss("not xml"), [])
+
+    def test_sentiment(self):
+        self.assertGreater(sources.news_sentiment("鴻海接單強勁 法人看好"), 0)
+        self.assertLess(sources.news_sentiment("某公司營收衰退 下修財測"), 0)
+        self.assertGreater(sources.news_sentiment("第三季虧損縮小"), 0)  # 片語優先
+        self.assertEqual(sources.news_sentiment("董事會通過議案"), 0)
+
+
 class ScreenTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -125,6 +167,79 @@ class ScreenTest(unittest.TestCase):
         m = analysis.market_summary(self.conn)
         self.assertEqual(m["tone"], "偏多")
         self.assertEqual(m["breadth_ma20"], 50.0)
+
+    def _add_extra(self):
+        last = self.days[-1]
+        # 1111 大戶連續增加、新聞偏多；2222 大戶減少、新聞偏空
+        hold = []
+        weeks = [(date.fromisoformat(last) - timedelta(days=7 * k)).isoformat() for k in range(4, -1, -1)]
+        for w, d in enumerate(weeks):
+            hold.append({"date": d, "code": "1111", "holders": 1000, "big400_pct": 50 + w * 0.6,
+                         "big1000_pct": 40 + w * 0.5, "retail_pct": 20 - w * 0.4})
+            hold.append({"date": d, "code": "2222", "holders": 1000, "big400_pct": 50 - w * 0.6,
+                         "big1000_pct": 40 - w * 0.5, "retail_pct": 20 + w * 0.4})
+        db.upsert(self.conn, "holders", hold, [])
+        news = [
+            {"url": "u1", "code": "1111", "published": last + "T15:00:00+08:00", "title": "測試甲接單強勁 營收創新高",
+             "source": "t", "summary": "", "sentiment": 1.0, "fetched": ""},
+            {"url": "u2", "code": "1111", "published": last + "T18:00:00+08:00", "title": "測試甲擴產 法人看好",
+             "source": "t", "summary": "", "sentiment": 1.0, "fetched": ""},
+            {"url": "u3", "code": "2222", "published": last + "T12:00:00+08:00", "title": "測試乙虧損 下修財測",
+             "source": "t", "summary": "", "sentiment": -1.0, "fetched": ""},
+            {"url": "u4", "code": "2222", "published": "2026-01-01T00:00:00+08:00", "title": "很舊的新聞",
+             "source": "t", "summary": "", "sentiment": 1.0, "fetched": ""},
+        ]
+        db.upsert(self.conn, "news", news, [])
+        self.conn.commit()
+
+    def test_report(self):
+        self._add_extra()
+        r = analysis.build_report(self.conn, watchlist=["2222", "1111"])
+        self.assertEqual([x["code"] for x in r["buy"]], ["1111"])
+        self.assertEqual([x["code"] for x in r["sell"]], ["2222"])
+        self.assertEqual([x["code"] for x in r["watch"]], ["2222", "1111"])
+        b, s_ = r["buy"][0], r["sell"][0]
+        self.assertEqual(b["verdict"], "偏多")
+        self.assertEqual(s_["verdict"], "偏空")
+        self.assertGreater(b["dims"]["holders"], 0)
+        self.assertEqual(b["dims"]["news"], 2)
+        self.assertLess(s_["dims"]["holders"], 0)
+        self.assertLess(s_["dims"]["news"], 0)
+        self.assertLess(s_["dims"]["trend"], 0)
+        self.assertLess(s_["dims"]["chips"], 0)
+        self.assertEqual(s_["news_count"], 1)  # 舊新聞不列入
+        self.assertTrue(any(x["dim"] == "holders" and "週增" in x["text"] for x in b["reasons"]))
+        self.assertEqual(r["coverage"]["holders_date"], self.days[-1])
+
+    def test_report_saved_and_performance(self):
+        self._add_extra()
+        # 用倒數第二天產生報告，再看最後一天的表現
+        rep = analysis.build_report(self.conn, until=self.days[-2])
+        analysis.save_report(self.conn, rep)
+        self.assertEqual(analysis.load_report(self.conn)["date"], self.days[-2])
+        perf = analysis.performance(self.conn)
+        self.assertEqual(perf[0]["next"], self.days[-1])
+        self.assertEqual(perf[0]["buy"]["n"], len(rep["buy"]))
+
+    def test_analyze_stock(self):
+        self._add_extra()
+        a = analysis.analyze_stock(self.conn, "2222")
+        self.assertEqual(a["verdict"], "偏空")
+        self.assertEqual(len(a["holders_history"]), 5)
+        self.assertEqual(len(a["news"]), 2)
+        self.assertIn("note", analysis.analyze_stock(self.conn, "9999"))
+
+    def test_collect_news(self):
+        from unittest import mock
+        from stockapp import collector
+        cn = {"items": {"data": [{"newsId": 9, "title": "測試甲(1111)接單強勁", "publishAt": 1791676800, "market": []}]}}
+        rss = "<rss><channel><item><title>測試乙下修財測</title><link>https://y/1</link></item></channel></rss>"
+        with mock.patch.object(sources, "fetch_cnyes", return_value=cn), \
+             mock.patch.object(sources, "fetch_yahoo_rss", return_value=rss):
+            collector.collect_news(self.conn, ["2222"])
+        rows = {(r["code"], r["title"]): r["sentiment"] for r in self.conn.execute("SELECT * FROM news")}
+        self.assertGreater(rows[("1111", "測試甲(1111)接單強勁")], 0)
+        self.assertLess(rows[("2222", "測試乙下修財測")], 0)
 
     def test_kline(self):
         k = analysis.kline(self.conn, "1111")

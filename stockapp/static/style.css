@@ -84,3 +84,22 @@ input { background: #0b0e13; color: var(--text); border: 1px solid var(--line); 
   .picks .reasons { min-width: 200px; }
   #view-analysis .analysis { overflow-x: auto; }
 }
+
+/* 盤後報告 */
+.tone.中性 { background: #2a2f38; }
+.picks .tone { margin-left: 0; margin-top: 2px; font-size: 11px; padding: 0 8px; }
+.report-head { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; }
+.perf { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; margin-bottom: 10px; }
+.subtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 0; }
+.subtabs button { border: none; background: none; color: var(--muted); padding: 8px 14px; border-radius: 0; }
+.subtabs button.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+a.news { display: block; font-size: 12px; text-decoration: none; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 460px; }
+a.news.flat { color: var(--muted); }
+a.news:hover { text-decoration: underline; }
+.legend-note { margin-top: 10px; }
+.diag { padding: 8px 10px; font-size: 13px; }
+.diag .verdict .tone { margin: 0 6px 0 0; }
+.diag .dims { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 6px 0; }
+.diag .reasons { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.diag .reasons .neg { color: var(--down); }
+.diag a.news { max-width: 220px; }

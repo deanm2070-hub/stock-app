@@ -1,12 +1,16 @@
-"""公開資料來源：證交所（TWSE）、櫃買中心（TPEx）、證交所 MIS 盤中報價。
+"""公開資料來源：證交所（TWSE）、櫃買中心（TPEx）、證交所 MIS 盤中報價、集保（TDCC）股權分散表、新聞 RSS。
 
 抓取（fetch_*）與解析（parse_*）分開，解析函式只吃 JSON，方便測試。
 證交所對頻繁請求會暫時封鎖 IP，所有請求都經過 _get() 做節流。
 """
+import csv
+import io
 import re
 import threading
+import xml.etree.ElementTree as ET
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
 
@@ -19,10 +23,10 @@ _lock = threading.Lock()
 _last_call = {"t": 0.0}
 
 
-def _get(url, params=None, throttle=True, timeout=20):
+def _get(url, params=None, throttle=True, timeout=20, as_text=False, interval=None):
     if throttle:
         with _lock:
-            wait = MIN_INTERVAL - (time.time() - _last_call["t"])
+            wait = (MIN_INTERVAL if interval is None else interval) - (time.time() - _last_call["t"])
             if wait > 0:
                 time.sleep(wait)
             _last_call["t"] = time.time()
@@ -31,6 +35,9 @@ def _get(url, params=None, throttle=True, timeout=20):
         try:
             r = _session.get(url, params=params, timeout=timeout)
             r.raise_for_status()
+            if as_text:
+                r.encoding = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else "utf-8"
+                return r.text
             return r.json()
         except (requests.RequestException, ValueError) as e:
             last_err = e
@@ -401,3 +408,146 @@ def parse_realtime(js):
             "time": f"{m.get('d', '')} {m.get('t', '')}".strip(),
         })
     return out
+
+
+# ---------- 集保：股權分散表（每週五資料，週六公布，只提供最新一週） ----------
+
+TDCC_URL = "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5"
+BIG400_LEVELS = (12, 13, 14, 15)   # 持股 400 張以上
+BIG1000_LEVEL = 15                 # 持股 1,000 張以上
+RETAIL_LEVELS = range(1, 9)        # 持股 50 張以下
+
+
+def fetch_tdcc():
+    return _get(TDCC_URL, as_text=True, timeout=60)
+
+
+def parse_tdcc(text):
+    """CSV 欄位：資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%。
+    分級 1~15 依持股張數由小到大，16 是差異數調整，17 是合計。
+    回傳每檔一列：大戶（400 張、1000 張以上）與散戶（50 張以下）持股比例、總股東人數。"""
+    by_code = {}
+    reader = csv.reader(io.StringIO((text or "").lstrip("\ufeff")))
+    header = next(reader, None)
+    if not header:
+        return []
+    for row in reader:
+        if len(row) < 6:
+            continue
+        code = row[1].strip()
+        lvl = inum(row[2])
+        if not is_common_stock(code) or lvl is None:
+            continue
+        ds = re.sub(r"\D", "", row[0])
+        if len(ds) != 8:
+            continue
+        rec = by_code.setdefault(code, {"date": f"{ds[:4]}-{ds[4:6]}-{ds[6:]}", "code": code,
+                                         "holders": None, "big400_pct": 0.0, "big1000_pct": 0.0, "retail_pct": 0.0})
+        people, pct = inum(row[3]), num(row[5]) or 0.0
+        if lvl in BIG400_LEVELS:
+            rec["big400_pct"] += pct
+        if lvl == BIG1000_LEVEL:
+            rec["big1000_pct"] += pct
+        if lvl in RETAIL_LEVELS:
+            rec["retail_pct"] += pct
+        if lvl == 17:
+            rec["holders"] = people
+    for r in by_code.values():
+        for k in ("big400_pct", "big1000_pct", "retail_pct"):
+            r[k] = round(r[k], 2)
+    return list(by_code.values())
+
+
+# ---------- 新聞：鉅亨網台股新聞（JSON）+ Yahoo 股市個股 RSS ----------
+
+CNYES_URL = "https://api.cnyes.com/media/api/v1/newslist/category/tw_stock"
+YAHOO_RSS = "https://tw.stock.yahoo.com/rss"
+NEWS_INTERVAL = 1.0  # 新聞站點的請求間隔（秒）
+TW = timezone(timedelta(hours=8))
+
+
+def fetch_cnyes(limit=100):
+    return _get(CNYES_URL, {"limit": limit}, interval=NEWS_INTERVAL)
+
+
+def parse_cnyes(js):
+    """回傳 [{'title','url','published','source','codes':[...]}]。"""
+    items = ((js or {}).get("items") or {}).get("data") or []
+    out = []
+    for it in items:
+        title = (it.get("title") or "").strip()
+        nid = it.get("newsId")
+        if not title or not nid:
+            continue
+        ts = it.get("publishAt")
+        published = datetime.fromtimestamp(ts, TW).isoformat(timespec="seconds") if isinstance(ts, (int, float)) else None
+        codes = set()
+        for m in it.get("market") or []:
+            c = str(m.get("code") or "").strip() if isinstance(m, dict) else ""
+            if is_common_stock(c):
+                codes.add(c)
+        for c in it.get("stock") or []:
+            if is_common_stock(str(c)):
+                codes.add(str(c))
+        out.append({"title": title, "url": f"https://news.cnyes.com/news/id/{nid}", "published": published,
+                    "source": "鉅亨網", "summary": (it.get("summary") or "").strip(), "codes": sorted(codes)})
+    return out
+
+
+def fetch_yahoo_rss(code, market="tse"):
+    suffix = ".TWO" if market == "otc" else ".TW"
+    return _get(YAHOO_RSS, {"s": code + suffix}, as_text=True, interval=NEWS_INTERVAL, timeout=15)
+
+
+def parse_rss(text, source="Yahoo股市"):
+    """一般 RSS 2.0：回傳 [{'title','url','published','source','summary'}]。"""
+    try:
+        root = ET.fromstring((text or "").strip().encode("utf-8"))
+    except ET.ParseError:
+        return []
+    out = []
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        url = (item.findtext("link") or "").strip()
+        if not title or not url:
+            continue
+        published = None
+        pd = item.findtext("pubDate")
+        if pd:
+            try:
+                published = parsedate_to_datetime(pd).astimezone(TW).isoformat(timespec="seconds")
+            except (TypeError, ValueError):
+                published = None
+        summary = re.sub(r"<[^>]+>", "", item.findtext("description") or "").strip()
+        out.append({"title": title, "url": url, "published": published, "source": source, "summary": summary[:300]})
+    return out
+
+
+# 關鍵字情緒：先比對「轉好」片語，避免「虧損縮小」被當成利空
+POS_PHRASES = ["虧損縮小", "虧損收斂", "轉虧為盈", "轉盈", "止跌回升", "跌深反彈"]
+NEG_PHRASES = ["獲利衰退", "由盈轉虧", "轉虧", "漲多拉回"]
+POS_WORDS = ["創新高", "新高", "大漲", "漲停", "飆", "上修", "調升", "看好", "買超", "成長", "創高", "年增", "月增",
+             "接單", "訂單", "擴產", "受惠", "利多", "優於預期", "強勁", "加碼", "目標價", "樂觀", "回溫", "增溫",
+             "旺季", "大單", "認購", "填息", "股利", "配息", "攻上", "勁揚", "噴出", "亮眼", "爆發", "突破"]
+NEG_WORDS = ["下修", "調降", "衰退", "虧損", "跌停", "大跌", "重挫", "賣超", "利空", "減產", "裁員", "違約",
+             "掏空", "下市", "處置", "警示", "砍單", "疲弱", "不如預期", "年減", "月減", "罰", "訴訟", "停工",
+             "跌破", "崩", "慘", "保守", "淡季", "降評", "減碼", "示警", "失利", "下滑", "疲軟", "棄", "急殺", "收購失敗"]
+
+
+def news_sentiment(text):
+    """回傳 -1 ~ +1 的情緒分數（關鍵字計數，簡單但透明）。"""
+    t = text or ""
+    pos = neg = 0
+    for p in POS_PHRASES:
+        if p in t:
+            pos += 1
+            t = t.replace(p, " ")
+    for p in NEG_PHRASES:
+        if p in t:
+            neg += 1
+            t = t.replace(p, " ")
+    pos += sum(1 for w in POS_WORDS if w in t)
+    neg += sum(1 for w in NEG_WORDS if w in t)
+    if pos == neg:
+        return 0.0
+    return round((pos - neg) / (pos + neg), 2)
