@@ -223,6 +223,7 @@ async function selectStock(code) {
   drawKline();
   renderQuote();
   renderInfo();
+  renderDiag();
   refreshQuotes();
 }
 
@@ -269,23 +270,80 @@ async function loadAnalysis() {
   await loadPicks();
 }
 
+const DIMS = [["trend", "走勢"], ["chips", "法人"], ["holders", "大戶"], ["news", "新聞"], ["fundamental", "基本"]];
+const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const pts = (n) => `<span class="${cls(n)}">${n > 0 ? "+" : ""}${n ?? 0}</span>`;
+const newsLinks = (list) => (list || []).map((n) =>
+  `<a class="news ${cls(n.sentiment)}" href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.source)}｜${esc(n.title)}</a>`).join("");
+let report = null, side = "buy";
+
 async function loadPicks() {
-  const ms = $("#min-score").value, qo = $("#quality-only").checked;
-  const r = await api(`/api/screen?min_score=${ms}&quality_only=${qo}`).catch((e) => ({ picks: [], note: e.message }));
-  $("#screen-meta").textContent = r.note || `資料日 ${r.date}，符合條件 ${r.candidates} 檔，顯示前 ${r.picks.length} 檔，可作為下一個交易日的觀察名單`;
-  $("#picks tbody").innerHTML = r.picks.length ? r.picks.map((p, i) => `<tr data-code="${p.code}">
-    <td>${i + 1}</td><td>${p.code} ${p.name}${p.quality ? '<span class="badge">績優</span>' : ""}</td>
-    <td>${fmt(p.close)}</td><td class="${cls(p.change)}">${fmt(p.pct)}</td><td><b>${p.score}</b></td>
-    <td>${p.trust_streak || "-"}</td><td>${p.foreign_streak || "-"}</td><td class="${cls(p.inst5)}">${fmtInt(p.inst5)}</td>
-    <td class="${cls(p.rev_yoy)}">${p.rev_yoy == null ? "-" : fmt(p.rev_yoy, 1) + "%"}</td><td>${fmt(p.pe, 1)}</td>
-    <td class="reasons">${p.reasons.map((x) => `<div class="${x.pts < 0 ? "neg" : ""}">${x.pts > 0 ? "+" : ""}${x.pts} ${x.text}</div>`).join("")}</td></tr>`).join("")
-    : `<tr><td colspan="11" class="empty">${r.note || "今天沒有符合條件的股票，可以降低最低分數再試"}</td></tr>`;
+  const r = await api("/api/report").catch((e) => ({ buy: [], sell: [], watch: [], note: e.message }));
+  report = r;
+  const c = r.coverage || {};
+  $("#report-meta").innerHTML = r.note ? r.note :
+    `資料日 <b>${r.date}</b>（名單供下一個交易日參考）・產生於 ${(r.generated || "").replace("T", " ")}・` +
+    `評估 ${r.counts?.evaluated ?? "-"} 檔・集保資料 ${c.holders_date || "尚無"}・新聞 ${c.news ?? 0} 則`;
+  document.querySelectorAll(".subtabs button").forEach((b) => {
+    const n = (r[b.dataset.side] || []).length;
+    b.textContent = b.textContent.replace(/（\d+）$/, "") + `（${n}）`;
+  });
+  renderPicks();
+  loadPerf();
 }
+
+function renderPicks() {
+  const rows = (report && report[side]) || [];
+  const empty = report?.note || (side === "watch" ? "自選股沒有足夠的盤後資料" : "今天沒有符合條件的股票");
+  $("#picks tbody").innerHTML = rows.length ? rows.map((p, i) => `<tr data-code="${p.code}">
+    <td>${i + 1}</td><td>${p.code} ${esc(p.name)}${p.quality ? '<span class="badge">績優</span>' : ""}
+      <div><span class="tone ${p.verdict}">${p.verdict}</span></div></td>
+    <td>${fmt(p.close)}</td><td class="${cls(p.change)}">${fmt(p.pct)}</td><td><b>${p.score}</b></td>
+    ${DIMS.map(([k]) => `<td>${pts(p.dims[k])}</td>`).join("")}
+    <td class="reasons">${p.reasons.map((x) => `<div class="${x.pts < 0 ? "neg" : ""}">${x.pts > 0 ? "+" : ""}${x.pts} ${esc(x.text)}</div>`).join("")}
+      ${newsLinks(p.news)}</td></tr>`).join("")
+    : `<tr><td colspan="11" class="empty">${esc(empty)}</td></tr>`;
+}
+
+async function loadPerf() {
+  const rows = await api("/api/report/performance?limit=10").catch(() => []);
+  if (!rows.length) return ($("#perf").innerHTML = `<span class="hint">名單隔日表現：累積幾天報告後會顯示</span>`);
+  const f = (x) => (x && x.n ? `<b class="${cls(x.avg_pct)}">${fmt(x.avg_pct)}%</b>（勝率 ${fmt(x.win_rate, 0)}%）` : "-");
+  $("#perf").innerHTML = `<span class="hint">名單隔日表現</span>` + rows.map((r) =>
+    `<span>${r.date.slice(5)}→${r.next.slice(5)}　偏多 ${f(r.buy)}　偏空 ${f(r.sell)}</span>`).join("");
+}
+
+document.querySelectorAll(".subtabs button").forEach((b) => b.addEventListener("click", () => {
+  side = b.dataset.side;
+  document.querySelectorAll(".subtabs button").forEach((x) => x.classList.toggle("active", x === b));
+  renderPicks();
+}));
 $("#picks").addEventListener("click", (e) => {
+  if (e.target.closest("a")) return;
   const tr = e.target.closest("tr[data-code]");
   if (tr) selectStock(tr.dataset.code);
 });
-$("#rescreen").addEventListener("click", loadPicks);
+$("#refresh-news").addEventListener("click", async () => {
+  await api("/api/collect?task=news", { method: "POST" });
+  $("#report-meta").textContent = "正在抓新聞並重算，完成後會自動更新…";
+  const wait = setInterval(async () => {
+    const s = await api("/api/status").catch(() => ({}));
+    if (!s.running) { clearInterval(wait); loadPicks(); setStatus(); }
+  }, 3000);
+});
+
+async function renderDiag() {
+  const code = state.code;
+  const a = await api(`/api/analyze/${code}`).catch(() => ({ note: "無法取得盤後診斷" }));
+  if (code !== state.code) return;
+  if (a.note) return ($("#diag").innerHTML = `<div class="hint">${esc(a.note)}</div>`);
+  const h = a.big400_pct != null ? `400 張大戶 ${fmt(a.big400_pct, 1)}%${a.big400_chg1w != null ? `（週${a.big400_chg1w >= 0 ? "增" : "減"} ${fmt(Math.abs(a.big400_chg1w))} 個百分點）` : ""}` : "尚無集保資料";
+  $("#diag").innerHTML = `<div class="verdict"><span class="tone ${a.verdict}">${a.verdict}</span> 總分 <b>${a.score}</b> <span class="hint">${a.date}</span></div>
+    <div class="dims">${DIMS.map(([k, n]) => `<span>${n} ${pts(a.dims[k])}</span>`).join("")}</div>
+    <div class="hint">${h}</div>
+    <div class="reasons">${a.reasons.slice(0, 6).map((x) => `<div class="${x.pts < 0 ? "neg" : ""}">${x.pts > 0 ? "+" : ""}${x.pts} ${esc(x.text)}</div>`).join("") || '<div class="hint">沒有明顯訊號</div>'}</div>
+    ${a.news?.length ? `<div class="hint" style="margin-top:6px">近期新聞</div>${newsLinks(a.news.slice(0, 5))}` : ""}`;
+}
 
 /* ---------- 其他 ---------- */
 function showView(v) {

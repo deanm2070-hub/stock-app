@@ -1,5 +1,4 @@
 """網頁伺服器：python run.py 後開 http://127.0.0.1:8000"""
-import json
 import os
 import threading
 import time
@@ -13,8 +12,6 @@ from pydantic import BaseModel
 from . import analysis, collector, db, sources
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-WATCHLIST = os.path.join(os.path.dirname(db.DB_PATH), "watchlist.json")
-DEFAULT_WATCH = ["2330", "2317", "2454", "2308", "2881"]
 
 app = FastAPI(title="台股籌碼看盤")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -94,18 +91,12 @@ class Watch(BaseModel):
 
 @app.get("/api/watchlist")
 def get_watch():
-    try:
-        with open(WATCHLIST, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return DEFAULT_WATCH
+    return db.load_watchlist()
 
 
 @app.post("/api/watchlist")
 def set_watch(w: Watch):
-    os.makedirs(os.path.dirname(WATCHLIST), exist_ok=True)
-    with open(WATCHLIST, "w", encoding="utf-8") as f:
-        json.dump(w.codes, f)
+    db.save_watchlist(w.codes)
     return w.codes
 
 
@@ -123,18 +114,44 @@ def screen(date_: str | None = Query(None, alias="date"), min_score: float = 4, 
         return analysis.screen(conn, until=date_, top=top, min_score=min_score, quality_only=quality_only)
 
 
+@app.get("/api/report")
+def report(date_: str | None = Query(None, alias="date")):
+    """盤後報告：隔日偏多／偏空名單與自選股診斷。沒有存檔就即時產生（不抓新聞）。"""
+    with conn_lock:
+        rep = analysis.load_report(conn, date_)
+        if not rep:
+            rep = analysis.build_report(conn, until=date_, watchlist=db.load_watchlist())
+        return rep
+
+
+@app.get("/api/report/performance")
+def report_performance(limit: int = 20):
+    with conn_lock:
+        return analysis.performance(conn, limit)
+
+
+@app.get("/api/analyze/{code}")
+def analyze(code: str):
+    with conn_lock:
+        return analysis.analyze_stock(conn, code)
+
+
 # ---------- 資料收集 ----------
 
-_job = {"running": False, "last": None, "error": None}
+_job = {"running": False, "last": None, "error": None, "task": None}
 
 
-def _run_collect(d=None):
+def _run_collect(d=None, task="all"):
+    """task: all＝完整盤後收集＋報告；news＝只更新新聞並重算報告。"""
     if _job["running"]:
         return
-    _job.update(running=True, error=None)
+    _job.update(running=True, error=None, task=task)
     try:
         c = db.connect()  # 收集用獨立連線，不卡住查詢
-        collector.collect_today(c, d)
+        if task == "news":
+            collector.make_report(c, with_news=True)
+        else:
+            collector.collect_today(c, d)
         c.close()
         _job["last"] = datetime.now().isoformat(timespec="seconds")
     except Exception as e:  # noqa: BLE001 - 收集失敗要回報給前端
@@ -144,9 +161,10 @@ def _run_collect(d=None):
 
 
 @app.post("/api/collect")
-def collect_now():
-    threading.Thread(target=_run_collect, daemon=True).start()
-    return {"started": True}
+def collect_now(task: str = "all"):
+    task = "news" if task == "news" else "all"
+    threading.Thread(target=_run_collect, kwargs={"task": task}, daemon=True).start()
+    return {"started": True, "task": task}
 
 
 @app.get("/api/status")
@@ -155,20 +173,24 @@ def status():
     return {**_job, "latest_date": d["d"], "trading_days": d["n"]}
 
 
-# 每個交易日 16:45 收盤後資料、21:45 再補一次融資融券（晚上才公布）
-SCHEDULE = [(16, 45), (21, 45)]
+# 每個交易日：
+#   16:45 收盤後資料（行情、法人、基本面、集保大戶）＋產生報告
+#   19:30 更新新聞並重算報告
+#   21:45 補融資融券（晚上才公布）＋重算報告
+#   08:00 開盤前再抓一次隔夜新聞，更新當天要看的名單
+SCHEDULE = [(16, 45, "all"), (19, 30, "news"), (21, 45, "all"), (8, 0, "news")]
 
 
 def _scheduler():
     fired = set()
     while True:
         now = datetime.now()
-        for hh, mm in SCHEDULE:
+        for hh, mm, task in SCHEDULE:
             key = (now.date(), hh, mm)
             if now.weekday() < 5 and (now.hour, now.minute) >= (hh, mm) and key not in fired:
                 fired.add(key)
                 if (now.hour, now.minute) < (hh + 1, mm):  # 只在排程時間後一小時內補跑
-                    _run_collect(date.today())
+                    _run_collect(date.today(), task)
         time.sleep(30)
 
 

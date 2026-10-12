@@ -4,11 +4,15 @@
     python -m stockapp.collector today            # 收今天（收盤後 16:30 以後執行最完整）
     python -m stockapp.collector backfill --days 90   # 回補最近 90 個日曆天的上市資料
     python -m stockapp.collector fundamentals     # 更新本益比、殖利率、月營收
+    python -m stockapp.collector holders          # 更新集保大戶持股（每週）
+    python -m stockapp.collector news             # 抓新聞並重新產生盤後報告
+    python -m stockapp.collector report           # 只重新產生盤後報告
 """
 import argparse
+import re
 from datetime import date, datetime, timedelta
 
-from . import db, sources
+from . import analysis, db, sources
 
 
 def _log(conn, d, kind, status):
@@ -83,6 +87,79 @@ def collect_fundamentals(conn):
     print(f"[基本面] {len(rows)} 檔")
 
 
+def collect_holders(conn):
+    """集保股權分散表只提供最新一週，每天抓一次，資料日相同就覆蓋，週週累積成歷史。"""
+    try:
+        rows = sources.parse_tdcc(sources.fetch_tdcc())
+    except RuntimeError as e:
+        print("[集保] 失敗", e)
+        return 0
+    db.upsert(conn, "holders", rows, ["date", "code"])
+    conn.commit()
+    print(f"[集保] {rows[0]['date'] if rows else '-'} {len(rows)} 檔")
+    return len(rows)
+
+
+def _match_codes(title, names):
+    """從標題找出提到的個股：代號（4 碼）或名稱（2 字以上）。"""
+    found = set()
+    for code, name in names.items():
+        if (name and len(name) >= 2 and name in title) or (code in title and re.search(rf"(?<!\d){code}(?!\d)", title)):
+            found.add(code)
+    return found
+
+
+def _store_news(conn, items, names, code_hint=None):
+    now = datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for it in items:
+        codes = set(it.get("codes") or [])
+        codes |= _match_codes(it["title"], names)
+        if code_hint:
+            codes.add(code_hint)
+        senti = sources.news_sentiment(it["title"] + " " + (it.get("summary") or "")[:120])
+        for c in codes or {""}:
+            rows.append({"url": it["url"], "code": c, "published": it.get("published") or now, "title": it["title"],
+                         "source": it["source"], "summary": it.get("summary") or "", "sentiment": senti, "fetched": now})
+    db.upsert(conn, "news", rows, ["url", "code"])
+    return len(rows)
+
+
+def collect_news(conn, codes=(), max_stocks=80):
+    """先抓鉅亨網台股新聞（一次一批），再對候選股逐檔抓 Yahoo 股市 RSS。"""
+    names = {r["code"]: r["name"] for r in conn.execute("SELECT code,name FROM stocks")}
+    markets = {r["code"]: r["market"] for r in conn.execute("SELECT code,market FROM stocks")}
+    n = 0
+    try:
+        n += _store_news(conn, sources.parse_cnyes(sources.fetch_cnyes()), names)
+    except RuntimeError as e:
+        print("[新聞] 鉅亨網失敗", e)
+    for code in list(dict.fromkeys(codes))[:max_stocks]:
+        try:
+            items = sources.parse_rss(sources.fetch_yahoo_rss(code, markets.get(code) or "tse"))
+            n += _store_news(conn, items, names, code_hint=code)
+        except RuntimeError as e:
+            print(f"[新聞] {code} 失敗", e)
+    cutoff = (datetime.now() - timedelta(days=30)).isoformat()
+    conn.execute("DELETE FROM news WHERE published<?", (cutoff,))
+    conn.commit()
+    print(f"[新聞] {n} 筆")
+    return n
+
+
+def make_report(conn, with_news=True):
+    """產生盤後報告。先不含新聞評一輪，挑出候選股與自選股抓新聞，再正式評分並存檔。"""
+    watch = db.load_watchlist()
+    if with_news:
+        pre = analysis.build_report(conn, top=40, watchlist=watch)
+        codes = watch + [x["code"] for x in pre["buy"]] + [x["code"] for x in pre["sell"][:20]]
+        collect_news(conn, codes)
+    rep = analysis.build_report(conn, watchlist=watch)
+    analysis.save_report(conn, rep)
+    print(f"[報告] {rep.get('date')} 偏多 {len(rep['buy'])} 檔、偏空 {len(rep['sell'])} 檔")
+    return rep
+
+
 def collect_today(conn, d=None):
     d = d or date.today()
     if d.weekday() >= 5:
@@ -92,6 +169,8 @@ def collect_today(conn, d=None):
     if opened:
         collect_tpex_latest(conn)
         collect_fundamentals(conn)
+        collect_holders(conn)
+        make_report(conn)
     print(f"{d} {'完成' if opened else '休市'}")
     return opened
 
@@ -111,7 +190,7 @@ def backfill(conn, days):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=["today", "backfill", "fundamentals"])
+    p.add_argument("cmd", choices=["today", "backfill", "fundamentals", "holders", "news", "report"])
     p.add_argument("--days", type=int, default=90)
     p.add_argument("--date", help="YYYY-MM-DD，today 指令可指定日期")
     a = p.parse_args()
@@ -122,6 +201,14 @@ def main():
             backfill(conn, a.days)
             collect_tpex_latest(conn)
             collect_fundamentals(conn)
+            collect_holders(conn)
+            make_report(conn)
+        elif a.cmd == "holders":
+            collect_holders(conn)
+        elif a.cmd == "news":
+            make_report(conn, with_news=True)
+        elif a.cmd == "report":
+            make_report(conn, with_news=False)
         else:
             collect_fundamentals(conn)
 
