@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>台股籌碼看盤</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">籌碼看盤</div>
+  <nav class="tabs">
+    <button data-view="watch" class="active">看盤</button>
+    <button data-view="analysis">盤後分析</button>
+  </nav>
+  <div class="search">
+    <input id="search" placeholder="輸入代號或名稱，例如 2330" autocomplete="off">
+    <ul id="search-results" class="dropdown hidden"></ul>
+  </div>
+  <div class="status" id="status"></div>
+</header>
+
+<main id="view-watch" class="view">
+  <aside class="watchlist">
+    <div class="panel-title">自選股 <span class="hint">（點右鍵移除）</span></div>
+    <table id="watch-table"><tbody></tbody></table>
+  </aside>
+
+  <section class="center">
+    <div class="quote-head" id="quote-head"></div>
+    <div class="legend" id="legend"></div>
+    <div id="chart-main" class="chart main"></div>
+    <div class="pane-label">成交量（張）</div>
+    <div id="chart-vol" class="chart sub"></div>
+    <div class="pane-label">三大法人買賣超（張）<span class="key tot">合計（柱）</span><span class="key fx">外資（線）</span><span class="key tr">投信（線）</span></div>
+    <div id="chart-inst" class="chart sub"></div>
+    <div class="pane-label">融資餘額（張）</div>
+    <div id="chart-margin" class="chart sub"></div>
+  </section>
+
+  <aside class="side">
+    <div class="panel-title">五檔報價</div>
+    <table id="book" class="book"></table>
+    <div class="panel-title">個股資料</div>
+    <dl id="info" class="info"></dl>
+    <div class="panel-title">近 10 日法人（張）</div>
+    <table id="inst-table" class="mini"></table>
+  </aside>
+</main>
+
+<main id="view-analysis" class="view hidden">
+  <section class="analysis">
+    <div class="disclaimer">以下為規則式條件篩選的結果，僅供研究參考，不構成任何投資建議。進場前請自行評估風險。</div>
+    <div id="market-card" class="card"></div>
+    <div class="screen-controls">
+      <label>最低分數 <input id="min-score" type="number" value="4" step="0.5" min="0"></label>
+      <label><input id="quality-only" type="checkbox"> 只看績優（營收年增且本益比 ≤ 25）</label>
+      <button id="rescreen">重新篩選</button>
+      <span id="screen-meta" class="hint"></span>
+    </div>
+    <table id="picks" class="picks">
+      <thead><tr><th>#</th><th>股票</th><th>收盤</th><th>漲跌%</th><th>分數</th><th>投信連買</th><th>外資連買</th><th>法人5日(張)</th><th>營收年增</th><th>本益比</th><th>入選理由</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
