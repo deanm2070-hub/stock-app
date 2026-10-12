@@ -287,6 +287,113 @@ $("#picks").addEventListener("click", (e) => {
 });
 $("#rescreen").addEventListener("click", loadPicks);
 
+/* ---------- 盤中提示：大單、急拉急殺、漲跌停 ---------- */
+const bt = { lastId: 0, items: [], local: { sound: true, notify: false } };
+try { Object.assign(bt.local, JSON.parse(localStorage.getItem("bigtrade") || "{}")); } catch {}
+const saveLocal = () => { try { localStorage.setItem("bigtrade", JSON.stringify(bt.local)); } catch {} };
+const LABEL = { trade: { buy: "外盤大買", sell: "內盤大賣", neutral: "大量成交" }, spike: { buy: "急拉" }, plunge: { sell: "急殺" }, limit: { buy: "漲停", sell: "跌停" } };
+const label = (a) => LABEL[a.kind]?.[a.side] || a.kind;
+const sideCls = (a) => (a.side === "buy" ? "up" : a.side === "sell" ? "down" : "flat");
+
+let audioCtx;
+document.addEventListener("click", () => { audioCtx ??= new (window.AudioContext || window.webkitAudioContext)(); }, { once: true });
+function beep(a) {
+  if (!audioCtx || !bt.local.sound) return;
+  // 偏多：往上的音；偏空：往下的音；急拉急殺、漲跌停多響一聲
+  const up = [880, 1320, 1760], down = [660, 440, 330];
+  const n = a.kind === "trade" ? 2 : 3;
+  const tones = a.side === "buy" ? up.slice(0, n) : a.side === "sell" ? down.slice(0, n) : [740];
+  tones.forEach((f, i) => {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain(), t = audioCtx.currentTime + i * 0.18;
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0.2, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(t);
+    o.stop(t + 0.16);
+  });
+}
+
+function detail(a) {
+  if (a.kind === "trade") return [`${fmtInt(a.lots)} 張 @ ${fmt(a.price)}`, a.note || (a.single ? "單筆" : "累計"), `${fmt(a.amount / 1e4, 0)} 萬`];
+  const pct = a.pct == null ? "" : `${a.pct > 0 ? "+" : ""}${fmt(a.pct)}%`;
+  if (a.kind === "limit") return [`${fmt(a.price)}`, null, pct];
+  return [`${fmt(a.price)}`, a.note, pct];
+}
+const btText = (a) => { const [x, tag, y] = detail(a); return `${label(a)} ${x}${tag ? `（${tag}）` : ""} ${y}`; };
+
+function renderBigTrades(fresh = new Set()) {
+  $("#bt-count").textContent = bt.items.length ? `${bt.items.length} 筆` : "";
+  $("#bt-list").innerHTML = bt.items.length ? bt.items.slice().reverse().map((a) => {
+    const [x, tag, y] = detail(a);
+    return `<li data-code="${a.code}" class="${fresh.has(a.id) ? "new" : ""}">
+      <div class="row1"><span>${a.time.slice(0, 5)} <b>${a.code}</b> ${a.name || ""}</span><span class="bt-side ${sideCls(a)}">${label(a)}</span></div>
+      <div class="row2"><span>${x}${tag ? `<span class="tag">${tag}</span>` : ""}</span><span class="${a.kind === "trade" ? "" : sideCls(a)}">${y}</span></div></li>`;
+  }).join("") : `<li class="hint">盤中偵測到大單、急拉急殺或漲跌停會列在這裡</li>`;
+}
+
+async function refreshBigTrades(initial = false) {
+  let rows;
+  try { rows = await api(`/api/alerts?since=${bt.lastId}`); } catch { return; }
+  if (!rows.length) return;
+  if (initial || (bt.items.length && rows[0].date !== bt.items[bt.items.length - 1].date)) bt.items = [];
+  bt.items.push(...rows);
+  bt.items = bt.items.slice(-300);
+  bt.lastId = rows[rows.length - 1].id;
+  renderBigTrades(initial ? new Set() : new Set(rows.map((a) => a.id)));
+  if (initial) return;
+  beep(rows.find((a) => a.kind !== "trade") || rows[rows.length - 1]);
+  rows.forEach((a) => {
+    document.querySelector(`#watch-table tr[data-code="${a.code}"]`)?.classList.add("bt-hit");
+    if (bt.local.notify && window.Notification?.permission === "granted") {
+      new Notification(`${label(a)} ${a.code} ${a.name || ""}`, { body: btText(a), tag: `bt-${a.id}` });
+    }
+  });
+  setTimeout(() => document.querySelectorAll("#watch-table tr.bt-hit").forEach((tr) => tr.classList.remove("bt-hit")), 3000);
+}
+
+$("#bt-list").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-code]");
+  if (li) selectStock(li.dataset.code);
+});
+$("#bt-cfg").addEventListener("click", async () => {
+  const f = $("#bt-settings");
+  f.classList.toggle("hidden");
+  if (f.classList.contains("hidden")) return;
+  const s = await api("/api/alerts/settings").catch(() => ({}));
+  $("#bt-enabled").checked = !!s.enabled;
+  $("#bt-trade").checked = !!s.trade_enabled;
+  $("#bt-lots").value = s.min_lots ?? 50;
+  $("#bt-amount").value = Math.round((s.min_amount ?? 1e7) / 1e4);
+  $("#bt-price").checked = !!s.price_enabled;
+  $("#bt-window").value = s.price_window ?? 2;
+  $("#bt-pct").value = s.price_pct ?? 2;
+  $("#bt-limit").checked = !!s.limit_enabled;
+  $("#bt-sound").checked = bt.local.sound;
+  $("#bt-notify").checked = bt.local.notify && window.Notification?.permission === "granted";
+});
+$("#bt-settings").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  bt.local.sound = $("#bt-sound").checked;
+  bt.local.notify = $("#bt-notify").checked;
+  if (bt.local.notify && window.Notification && Notification.permission !== "granted") {
+    bt.local.notify = (await Notification.requestPermission()) === "granted";
+    if (!bt.local.notify) alert("瀏覽器沒有允許通知，請在網址列左邊的設定開啟。");
+  }
+  saveLocal();
+  await api("/api/alerts/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    enabled: $("#bt-enabled").checked,
+    trade_enabled: $("#bt-trade").checked,
+    min_lots: Math.max(0, parseInt($("#bt-lots").value) || 0),
+    min_amount: Math.max(0, Math.round((parseFloat($("#bt-amount").value) || 0) * 1e4)),
+    price_enabled: $("#bt-price").checked,
+    price_window: Math.min(30, Math.max(1, parseInt($("#bt-window").value) || 2)),
+    price_pct: Math.max(0.1, parseFloat($("#bt-pct").value) || 2),
+    limit_enabled: $("#bt-limit").checked,
+  }) });
+  $("#bt-settings").classList.add("hidden");
+});
+
 /* ---------- 其他 ---------- */
 function showView(v) {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
@@ -312,9 +419,12 @@ async function setStatus(err) {
   state.watch = await api("/api/watchlist");
   await setStatus();
   selectStock(state.watch[0] || "2330");
+  renderBigTrades();
+  await refreshBigTrades(true);
   let tick = 0;
   setInterval(() => {
     tick++;
     if (isMarketOpen() || tick % 12 === 0) refreshQuotes();
+    if (isMarketOpen()) refreshBigTrades();
   }, 5000);
 })();
